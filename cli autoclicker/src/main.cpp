@@ -3,38 +3,47 @@
 #include <random>
 #include <chrono>
 #include <thread>
+#include <string>
 
-int min_cps = 8, max_cps = 13;
-bool toggled = false, pressed = false, first_click = false;
-int keybind = VK_F4;
+#define KEY_DOWN(k) GetAsyncKeyState(k) & 0x8000
 
-std::mt19937 mersenne{ static_cast<std::mt19937::result_type>(time(nullptr)) };
+using namespace std::chrono_literals;
 
-int random_int(int min, int max)
+struct settings_t
 {
-    std::uniform_int_distribution gen(min, max);
-    return gen(mersenne);
+    int m_min_cps, m_max_cps, m_keybind;
+    bool m_pressed, m_toggled, m_first_click;
+};
+
+auto random_int(int min, int max)
+{
+    static auto device = std::random_device();
+    static auto engine = std::mt19937(device());
+    const auto gen = std::uniform_int_distribution<int>(min, max);
+    return gen(engine);
 }
 
-void run_keybind()
+auto run_keybind(settings_t *settings)
 {
-    while (!(GetAsyncKeyState(VK_DELETE) & 0x8000))
+    while (!(KEY_DOWN(VK_DELETE)))
     {
-        if (GetKeyState(keybind) & 0x8000 && !pressed)
+        if (KEY_DOWN(settings->m_keybind) && !settings->m_pressed)
         {
-            pressed = true;
+            settings->m_pressed = true;
         }
-        else if (!(GetKeyState(keybind) & 0x8000) && pressed)
+        else if (!(KEY_DOWN(settings->m_keybind)) && settings->m_pressed)
         {
-            toggled = !toggled;
-            pressed = false;
+            settings->m_toggled = !settings->m_toggled;
+            settings->m_pressed = false;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(10ms);
     }
+
+    delete settings;
     std::exit(0);
 }
 
-int main(int argc, char* argv[])
+auto main(int argc, char* argv[]) -> int
 {
     if (argc < 4)
     {
@@ -45,40 +54,52 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    min_cps = std::atoi(argv[1]);
-    max_cps = std::atoi(argv[2]);
+    auto* settings = new settings_t;
 
-    keybind = std::atoi(argv[3]);
+    settings->m_toggled = false;
+    settings->m_pressed = false;
+    settings->m_first_click = false;
+
+    settings->m_min_cps = std::stoi(argv[1]);
+    settings->m_max_cps = std::stoi(argv[2]);
+    settings->m_keybind = std::stoi(argv[3]);
 
     SetConsoleTitleA(" ");
-    CreateThread(0, 0, (LPTHREAD_START_ROUTINE)run_keybind, 0, 0, 0);
-
-    while (!(GetAsyncKeyState(VK_DELETE) & 0x8000))
+	
+	// be careful as you have a data race here
+	auto* handle = CreateThread(nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(run_keybind), settings, 0, nullptr);
+    auto* window_handle = FindWindowA("LWJGL", nullptr);
+	
+    while (!(KEY_DOWN(VK_DELETE)))
     {
-        while (GetAsyncKeyState(VK_LBUTTON) & 0x8000 && toggled)
+        while (KEY_DOWN(VK_LBUTTON) && settings->m_toggled)
         {
-            if (GetForegroundWindow() == FindWindowA("LWJGL", NULL))
+            if (GetForegroundWindow() == window_handle)
             {
-                if (first_click)
+                if (settings->m_first_click)
                 {
-                    PostMessageA(FindWindowA("LWJGL", NULL), WM_LBUTTONUP, MK_LBUTTON, MAKELPARAM(0, 0));
+                    PostMessageA(window_handle, WM_LBUTTONUP, MK_LBUTTON, MAKELPARAM(0, 0));
                     std::this_thread::sleep_for(std::chrono::milliseconds(random_int(15, 35)));
-                    first_click = false;
+                    settings->m_first_click = false;
                 }
                 else
                 {
-                    PostMessageA(FindWindowA("LWJGL", NULL), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(0, 0));
-                    int down_delay = random_int(15, 35);
+                    PostMessageA(window_handle, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(0, 0));
+                    const auto down_delay = random_int(15, 35);
                     std::this_thread::sleep_for(std::chrono::milliseconds(down_delay));
 
-                    PostMessageA(FindWindowA("LWJGL", NULL), WM_LBUTTONUP, MK_LBUTTON, MAKELPARAM(0, 0));
-                    int up_delay = random_int(850, 1150) / (random_int(min_cps, max_cps) + random_int(-1, 3)) - down_delay;
+                    PostMessageA(window_handle, WM_LBUTTONUP, MK_LBUTTON, MAKELPARAM(0, 0));
+                    const auto up_delay = random_int(850, 1150) / (random_int(settings->m_min_cps, settings->m_max_cps) + random_int(-1, 3)) - down_delay;
                     std::this_thread::sleep_for(std::chrono::milliseconds(up_delay));
                 }
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        first_click = true;
+        std::this_thread::sleep_for(10ms);
+        settings->m_first_click = true;
     }
+
+	if (handle) CloseHandle(handle);
+	
+    delete settings;
     std::exit(0);
 }
